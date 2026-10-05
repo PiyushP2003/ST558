@@ -282,4 +282,57 @@ test_all <- get_census_data(
 )
 
 head(test_all)
+
 ```
+
+## Combining Multiple Years
+
+The single year function is useful if I only want one year of the census data, but I also want to compare data from multiple years. I created a second function that calls the same single year function for each requested year and then combines the results into a tibble. A year variable is also added so that observations from different years can be identified after all the data has been combined.
+
+```{r}
+get_census_years <- function(years = c(2023, 2024),
+                             num_vars = c("AGEP", "PWGTP"),
+                             cat_vars = "SEX",
+                             geography = "State",
+                             geo_value = NULL) {
+  
+  valid_years <- c(2021, 2022, 2023, 2024)
+  
+  if (!all(years %in% valid_years)) {
+    stop("Years must be 2021, 2022, 2023, or 2024.")
+  }
+  
+  data_list <- lapply(years, function(year) {
+    
+    year_data <- get_census_data(
+      year = year,
+      num_vars = num_vars,
+      cat_vars = cat_vars,
+      geography = geography,
+      geo_value = geo_value
+    )
+    
+    year_data$year <- year
+    
+    return(year_data)
+  })
+  
+  result <- bind_rows(data_list)
+  
+  class(result) <- c("census", class(result))
+  
+  return(result)
+}
+```
+
+```{r}
+test_years <- get_census_years(
+  years = c(2023, 2024),
+  geography = "State",
+  geo_value = "37"
+)
+
+head(test_years)
+```
+
+The example above retrieves the NC data for 2023 and 2024. The year column shows which year the observation is from and this makes it possible to compare numeric and categorical data across the years later in the analysis.
