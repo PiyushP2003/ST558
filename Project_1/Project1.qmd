@@ -4,23 +4,282 @@ format: html
 editor: visual
 ---
 
-## Quarto
+# Introduction
 
-Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+This project uses data from the Public use Microdata Sample(PUMS) Census API. The goal is to create functions that can retrieve, process, summarize, and visualize census data from multiple years.
 
-## Running Code
+# Data Processing
 
-When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
-
-```{r}
-1 + 1
-```
-
-You can add options to executable code like this
+## Parsing Variable Values
 
 ```{r}
-#| echo: false
-2 * 2
+library(httr)
+library(jsonlite)
+library(tidyverse)
+census_key <- Sys.getenv("CENSUS_API_KEY")
 ```
 
-The `echo: false` option disables the printing of code (only output is displayed).
+```{r}
+get_variable_info <- function(year){
+  url <- paste0("https://api.census.gov/data/", year, "/acs/acs1/pums/variables.json")
+  response <- GET(url)
+  json_text <- content(response, as = "text", encoding="UTF-8")
+  variables <- fromJSON(json_text, simplifyVector = FALSE)$variables
+  
+  if (year %in% c(2021, 2022)){
+    state_var <- "ST"
+  } else {
+    state_var <- "STATE"
+  }
+  
+  wanted_vars <- c("AGEP", "GASP", "GRPIP", "JWAP", "JWDP", "JWMNP", "PWGTP",
+                   "FER", "HHL", "SCH", "SCHL", "SEX", state_var, "REGION", "DIVISION")
+  
+  variables[wanted_vars]
+}
+```
+
+```{r}
+variables_2021 <- get_variable_info(2021)
+variables_2022 <- get_variable_info(2022)
+variables_2023 <- get_variable_info(2023)
+variables_2024 <- get_variable_info(2024)
+
+variable_info <- list(
+  "2021" = variables_2021,
+  "2022" = variables_2022,
+  "2023" = variables_2023,
+  "2024" = variables_2024
+)
+
+names(variable_info)
+
+dir.create("data", showWarnings = FALSE)
+saveRDS(variable_info, "data/variable_info.rds")
+```
+
+## Parsing API Data
+
+Now that the variable information has been saved, the next step is to query and process the PUMS API data. I created a helper function to convert the API response into a tibble before building the main function used to retrieve Census data.
+
+```{r}
+response_to_tibble <- function(response) {
+  data <- content(response)
+  column_names <- unlist(data[[1]])
+  data_rows <- data[-1]
+  data_matrix <- do.call(rbind, lapply(data_rows, unlist))
+  result <- as_tibble(data_matrix)
+  names(result) <- column_names
+  return(result)
+}
+```
+
+The API response stores the column names in the first element and the observations in the remaining elements. I created a helper function to separate these pieces and convert the returned data into a tibble.
+
+```{r}
+convert_time <- function(x, value_info) {
+  labels <- vapply(x, function(code) {
+    if (is.na(code) || code == "0") {
+      return(NA_character_)
+    }
+    
+    code <- sprintf("%03d", as.numeric(code))
+    label <- value_info[[code]]
+    
+    if (is.null(label)) {
+      return(NA_character_)
+    }
+    
+    return(label)
+  }, character(1))
+  
+  labels <- gsub("a\\.m\\.", "AM", labels)
+  labels <- gsub("p\\.m\\.", "PM", labels)
+  
+  start_time <- sub(" to .*", "", labels)
+  end_time <- sub(".* to ", "", labels)
+  
+  start_time <- lubridate::parse_date_time(
+    start_time,
+    orders = "I:M p",
+    quiet = TRUE
+  )
+  
+  end_time <- lubridate::parse_date_time(
+    end_time,
+    orders = "I:M p",
+    quiet = TRUE
+  )
+  
+  midpoint <- start_time + (end_time - start_time) / 2
+  
+  return(midpoint)
+}
+```
+
+```{r}
+get_census_data <- function(year = 2024,
+                            num_vars = c("AGEP", "PWGTP"),
+                            cat_vars = "SEX",
+                            geography = "State",
+                            geo_value = NULL) {
+  
+  valid_years <- c(2021, 2022, 2023, 2024)
+  
+  if (length(year) != 1 || !year %in% valid_years) {
+    stop("Year must be 2021, 2022, 2023, or 2024.")
+  }
+  
+  valid_num_vars <- c(
+    "AGEP", "GASP", "GRPIP", "JWAP",
+    "JWDP", "JWMNP", "PWGTP"
+  )
+  
+  if (!all(num_vars %in% valid_num_vars)) {
+    stop("Invalid numeric variable.")
+  }
+  
+  if (!"PWGTP" %in% num_vars) {
+    stop("PWGTP must be included.")
+  }
+  
+  if (length(setdiff(num_vars, "PWGTP")) < 1) {
+    stop("At least one numeric variable other than PWGTP must be included.")
+  }
+  
+  valid_cat_vars <- c("FER", "HHL", "SCH", "SCHL", "SEX")
+  
+  if (length(cat_vars) < 1) {
+    stop("At least one categorical variable must be included.")
+  }
+  
+  if (!all(cat_vars %in% valid_cat_vars)) {
+    stop("Invalid categorical variable.")
+  }
+  
+  valid_geographies <- c("Region", "Division", "State")
+  
+  if (length(geography) != 1 || !geography %in% valid_geographies) {
+    stop("Geography must be Region, Division, or State.")
+  }
+  
+  if (is.null(geo_value)) {
+    if (geography == "State") {
+      geo_value <- "37"
+    } else if (geography == "Region") {
+      geo_value <- "3"
+    } else {
+      geo_value <- "5"
+    }
+  }
+  
+  variable_info <- readRDS("data/variable_info.rds")
+  year_info <- variable_info[[as.character(year)]]
+  
+  if (geography == "State") {
+    if (year %in% c(2021, 2022)) {
+      geo_var <- "ST"
+    } else {
+      geo_var <- "STATE"
+    }
+  } else {
+    geo_var <- toupper(geography)
+  }
+  
+  valid_geo_values <- names(year_info[[geo_var]]$values$item)
+  
+  if (tolower(as.character(geo_value)) != "all" &&
+      !as.character(geo_value) %in% valid_geo_values) {
+    stop("Invalid geography value.")
+  }
+  
+  if (tolower(as.character(geo_value)) == "all") {
+    geo_value <- "*"
+  }
+  
+  requested_vars <- unique(c(num_vars, cat_vars))
+  get_vars <- paste(requested_vars, collapse = ",")
+  
+  census_key <- Sys.getenv("CENSUS_API_KEY")
+  
+  if (census_key == "") {
+    stop("Census API key was not found.")
+  }
+  
+  url <- paste0(
+    "https://api.census.gov/data/",
+    year,
+    "/acs/acs1/pums?get=",
+    get_vars,
+    "&for=",
+    tolower(geography),
+    ":",
+    geo_value,
+    "&key=",
+    census_key
+  )
+  
+  response <- GET(url)
+  stop_for_status(response)
+  
+  result <- response_to_tibble(response)
+  
+  for (var in setdiff(num_vars, c("JWAP", "JWDP"))) {
+    result[[var]] <- as.numeric(result[[var]])
+  }
+  
+  time_vars <- intersect(num_vars, c("JWAP", "JWDP"))
+  
+  for (var in time_vars) {
+    result[[var]] <- convert_time(
+      result[[var]],
+      year_info[[var]]$values$item
+    )
+  }
+  
+  for (var in cat_vars) {
+    value_info <- year_info[[var]]$values$item
+    
+    if (!is.null(value_info)) {
+      result[[var]] <- factor(
+        result[[var]],
+        levels = names(value_info),
+        labels = unlist(value_info)
+      )
+    }
+  }
+  
+  class(result) <- c("census", class(result))
+  
+  return(result)
+}
+```
+
+```{r}
+test_time <- get_census_data(
+  num_vars = c("AGEP", "JWAP", "PWGTP")
+)
+
+test_time |>
+  filter(!is.na(JWAP)) |>
+  select(AGEP, JWAP, PWGTP, SEX) |>
+  head()
+```
+
+```{r}
+test_state <- get_census_data(
+  geography = "State",
+  geo_value = "37"
+)
+
+head(test_state)
+```
+
+```{r}
+test_all <- get_census_data(
+  geography = "State",
+  geo_value = "all"
+)
+
+head(test_all)
+```
