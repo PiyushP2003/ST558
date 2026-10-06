@@ -12,6 +12,8 @@ This project uses data from the Public use Microdata Sample(PUMS) Census API. Th
 
 ## Parsing Variable Values
 
+Before getting the census data, I first collected the variable information for each year. I saved this info in an RDS file so it could be used later while processing the census data.
+
 ```{r}
 library(httr)
 library(jsonlite)
@@ -68,7 +70,7 @@ response_to_tibble <- function(response) {
   column_names <- unlist(data[[1]])
   data_rows <- data[-1]
   data_matrix <- do.call(rbind, lapply(data_rows, unlist))
-  result <- as_tibble(data_matrix)
+  result <- as_tibble(data_matrix, .name_repair = "minimal")
   names(result) <- column_names
   return(result)
 }
@@ -139,12 +141,12 @@ get_census_data <- function(year = 2024,
     stop("Invalid numeric variable.")
   }
   
-  if (!"PWGTP" %in% num_vars) {
-    stop("PWGTP must be included.")
-  }
-  
   if (length(setdiff(num_vars, "PWGTP")) < 1) {
     stop("At least one numeric variable other than PWGTP must be included.")
+  }
+
+  if (!"PWGTP" %in% num_vars) {
+    num_vars <- c(num_vars, "PWGTP")
   }
   
   valid_cat_vars <- c("FER", "HHL", "SCH", "SCHL", "SEX")
@@ -403,3 +405,87 @@ summary(
   cat_vars = "SEX"
 )
 ```
+
+## Plotting Census Data
+
+I also created a plot function to compare a numeric variable across the levels of a categorical variable. PWGTP is used as the weight so that each obs is represented accurately.
+
+```{r}
+plot.census <- function(x, cat_var, num_var, ...) {
+  
+  ggplot(
+    x,
+    aes(
+      x = get(cat_var),
+      y = get(num_var),
+      weight = PWGTP
+    )
+  ) +
+    geom_boxplot() +
+    labs(
+      x = cat_var,
+      y = num_var,
+      title = paste(num_var, "by", cat_var)
+    )
+}
+```
+
+```{r}
+plot(
+  test_years,
+  cat_var = "SEX",
+  num_var = "AGEP"
+)
+```
+
+This plot compares the age distribution between males and females
+
+```{r}
+test_years$year <- as.factor(test_years$year)
+
+plot(
+  test_years,
+  cat_var = "year",
+  num_var = "AGEP"
+)
+```
+
+This plot compares the age distribution between the 2023 and 2024 census data.
+
+# Investigation
+
+For this investigation, I looked at age in NC using 2023 and 2024 census data. I wanted to see the overall age distributions and compare between sex and year.
+
+```{r}
+summary(test_years)
+```
+
+The summary gives the weighted average and standard deviation for age and the weighted counts for sex and year.
+
+```{r}
+summary(
+  test_years,
+  num_vars = "AGEP",
+  cat_vars = "year"
+)
+```
+
+This summary focuses on age and the number of people represented in each year.
+
+```{r}
+plot(
+  test_years,
+  cat_var = "SEX",
+  num_var = "AGEP"
+)
+```
+
+```{r}
+plot(
+  test_years,
+  cat_var = "year",
+  num_var = "AGEP"
+)
+```
+
+The first plot compares age between males and females while the second compares the age distributions between 2023 and 2024
