@@ -336,3 +336,70 @@ head(test_years)
 ```
 
 The example above retrieves the NC data for 2023 and 2024. The year column shows which year the observation is from and this makes it possible to compare numeric and categorical data across the years later in the analysis.
+
+## Summarizing Census Data
+
+The PUMS data can't be summarized by treating each row as a person because the PWGTP represents the number of people that each row represents. Because of this I created a custom summary function for census objects that use PWGTP when calculating numeric summaries and categorical counts.
+
+```{r}
+summary.census <- function(object,num_vars = NULL,cat_vars = NULL,...) {
+  
+  if (is.null(num_vars)) {
+    num_vars <- names(object)[sapply(object, is.numeric)]
+    num_vars <- setdiff(num_vars, c("PWGTP", "year"))
+  }
+  
+  if (is.null(cat_vars)) {
+    cat_vars <- names(object)[sapply(object, is.factor)]
+    if ("year" %in% names(object)) {
+      cat_vars <- c(cat_vars, "year")
+    }
+  }
+  
+  results <- list()
+  
+  for (var in num_vars) {
+    x <- object[[var]]
+    weights <- object$PWGTP
+    keep <- !is.na(x) & !is.na(weights)
+    x <- x[keep]
+    weights <- weights[keep]
+    weighted_mean <- sum(x * weights) / sum(weights)
+    weighted_sd <- sqrt(
+      sum(x^2 * weights) / sum(weights) - weighted_mean^2
+    )
+    results[[var]] <- c(
+      mean = weighted_mean,
+      sd = weighted_sd
+    )
+  }
+  for (var in cat_vars) {
+    values <- object[[var]]
+    weights <- object$PWGTP
+    
+    counts <- tapply(
+      weights,
+      values,
+      sum,
+      na.rm = TRUE
+    )
+    results[[var]] <- counts
+  }
+  
+  return(results)
+}
+```
+
+```{r}
+summary(test_years)
+```
+
+The summary function uses PWGTP as the weight when calculating the results. The function also returns weighted counts for sex and year.
+
+```{r}
+summary(
+  test_years,
+  num_vars = "AGEP",
+  cat_vars = "SEX"
+)
+```
